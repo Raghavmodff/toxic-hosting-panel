@@ -3,6 +3,7 @@ import subprocess
 import signal
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 
 app = FastAPI(title="TOXIC HOSTING PANEL")
 
@@ -14,8 +15,36 @@ LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 
-# Process tracking dictionary: { "filename": Popen_Object }
+# Process tracking dictionary
 RUNNING_PROCESSES = {}
+
+class CommandReq(BaseModel):
+    command: str
+
+@app.post("/exec")
+def execute_command(req: CommandReq):
+    cmd = req.command.strip()
+    if not cmd:
+        raise HTTPException(status_code=400, detail="Command blank nahi ho sakti!")
+    
+    try:
+        # Execute command in BASE_DIR with 60 sec timeout
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=BASE_DIR
+        )
+        output = result.stdout + result.stderr
+        if not output.strip():
+            output = "Command executed successfully (no output)."
+        return {"status": "success", "output": output}
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "output": "Execution timed out (60 seconds limit)."}
+    except Exception as e:
+        return {"status": "error", "output": f"Execution Error: {str(e)}"}
 
 @app.post("/upload")
 async def upload_script(file: UploadFile = File(...)):
@@ -151,6 +180,21 @@ def dashboard():
             </header>
 
             <main class="max-w-4xl mx-auto p-4 space-y-4">
+                <!-- Manual Terminal Execution -->
+                <div class="bg-gray-900 p-4 rounded-xl border border-gray-800 shadow-lg">
+                    <h2 class="text-sm font-semibold mb-3 text-gray-300 flex items-center gap-2">
+                        <i class="fa-solid fa-terminal text-yellow-400"></i> Web Terminal (Run Pip / Linux Commands)
+                    </h2>
+                    <div class="flex flex-col sm:flex-row gap-2 mb-3">
+                        <input type="text" id="cmdInput" placeholder="e.g. pip install aiohttp" class="bg-gray-800 text-xs text-gray-300 rounded-lg p-2.5 border border-gray-700 w-full font-mono focus:outline-none focus:border-yellow-500" onkeydown="if(event.key==='Enter') runCommand()">
+                        <button onclick="runCommand()" class="bg-yellow-500 hover:bg-yellow-400 text-black font-bold px-6 py-2.5 rounded-lg text-xs tracking-wider transition-all flex items-center justify-center gap-2">
+                            <i class="fa-solid fa-play"></i> EXECUTE
+                        </button>
+                    </div>
+                    <pre id="terminalOutput" class="bg-black/90 border border-gray-800 p-3.5 rounded-lg text-green-400 text-xs h-32 overflow-y-auto font-mono leading-relaxed select-text">Terminal ready. Type command above and click EXECUTE...</pre>
+                </div>
+
+                <!-- Deploy Script Section -->
                 <div class="bg-gray-900 p-4 rounded-xl border border-gray-800 shadow-lg">
                     <h2 class="text-sm font-semibold mb-3 text-gray-300 flex items-center gap-2">
                         <i class="fa-solid fa-cloud-arrow-up text-yellow-400"></i> Deploy New Script
@@ -163,6 +207,7 @@ def dashboard():
                     </div>
                 </div>
 
+                <!-- Active Containers Section -->
                 <div class="bg-gray-900 p-4 rounded-xl border border-gray-800 shadow-lg">
                     <h2 class="text-sm font-semibold mb-3 text-gray-300 flex items-center justify-between">
                         <span class="flex items-center gap-2"><i class="fa-solid fa-server text-yellow-400"></i> Active Containers</span>
@@ -173,10 +218,11 @@ def dashboard():
                     </div>
                 </div>
 
+                <!-- Console Logs Section -->
                 <div class="bg-gray-900 p-4 rounded-xl border border-gray-800 shadow-lg">
                     <div class="flex justify-between items-center mb-3">
                         <h2 class="text-sm font-semibold text-gray-300 flex items-center gap-2">
-                            <i class="fa-solid fa-terminal text-yellow-400"></i> Console Logs: 
+                            <i class="fa-solid fa-code text-yellow-400"></i> Console Logs: 
                             <span id="activeLogFile" class="text-yellow-400 font-mono">None Selected</span>
                         </h2>
                         <button onclick="refreshLogs()" class="bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 text-xs px-3 py-1.5 rounded-lg flex items-center gap-1.5">
@@ -224,6 +270,28 @@ def dashboard():
             });
 
             let currentLogScript = null;
+
+            async function runCommand() {
+                const cmdInput = document.getElementById('cmdInput');
+                const termBox = document.getElementById('terminalOutput');
+                const cmd = cmdInput.value.trim();
+                if(!cmd) return alert("Pehle command enter karo!");
+
+                termBox.innerText = `$ ${cmd}\nExecuting command... Please wait...`;
+                
+                try {
+                    const res = await fetch('/exec', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ command: cmd })
+                    });
+                    const data = await res.json();
+                    termBox.innerText = `$ ${cmd}\n\n${data.output}`;
+                    termBox.scrollTop = termBox.scrollHeight;
+                } catch(e) {
+                    termBox.innerText = `$ ${cmd}\n\nError executing command: ${e.message}`;
+                }
+            }
 
             async function fetchScripts() {
                 try {
